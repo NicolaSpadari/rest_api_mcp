@@ -9,7 +9,7 @@ A lightweight [Model Context Protocol (MCP)](https://modelcontextprotocol.io) se
 - **TypeScript type generation** — automatically derives TypeScript interfaces from API response structures
 - **Response structure analysis** — inspect keys, types, and array lengths without returning the full body
 - **Field extraction** — pull specific fields using dot-notation paths (e.g. `data.items[].name`)
-- **Flexible authentication** — bearer token resolution chain: project `.env` file → MCP config env var → session token
+- **Flexible authentication** — bearer token resolution chain: project `.env.mcp` file → MCP config env var → session token
 - **Custom headers** — inject global headers via `HEADER_*` environment variables
 - **Zero external runtime dependencies** — uses only the MCP SDK and Node.js built-in `fetch`
 
@@ -67,14 +67,14 @@ All configuration is done via environment variables:
 | `REST_BASE_URL` | Yes | Base URL for all API requests (e.g. `https://api.example.com/v1`) |
 | `REST_BEARER_TOKEN` | No | Bearer token for authentication |
 | `REST_RESPONSE_SIZE_LIMIT` | No | Max response size in bytes before smart truncation (default: `50000`) |
-| `REST_ENV_DIR` | No | Additional directory to search for `.env` files containing `REST_BEARER_TOKEN` |
+| `REST_ENV_DIR` | No | Additional directory to search for `.env.mcp` files containing `REST_BEARER_TOKEN` |
 | `HEADER_*` | No | Custom headers injected into every request (e.g. `HEADER_X_API_KEY=abc` sends `X-Api-Key: abc`) |
 
 ### Authentication
 
 Bearer tokens are resolved in this order (first match wins):
 
-1. **Project `.env` file** — `REST_BEARER_TOKEN` in a `.env` file in the working directory or `REST_ENV_DIR`. Re-read on every request, so token rotation is supported without restarting the server.
+1. **Project `.env.mcp` file** — `REST_BEARER_TOKEN` in a `.env.mcp` file in the working directory or `REST_ENV_DIR`. Re-read on every request, so token rotation is supported without restarting the server.
 2. **MCP config env var** — `REST_BEARER_TOKEN` set in the MCP server configuration.
 3. **Session token** — set at runtime via the `rest_set_token` tool.
 

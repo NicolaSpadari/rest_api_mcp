@@ -26,14 +26,14 @@ const RESPONSE_SIZE_LIMIT = Math.max(
 
 const CONFIG_BEARER_TOKEN = process.env.REST_BEARER_TOKEN || '';
 
-// Directories to search for .env files (cwd first, then explicit env var)
+// Directories to search for .env.mcp files (cwd first, then explicit env var)
 const ENV_SEARCH_DIRS = [
   process.cwd(),
   process.env.REST_ENV_DIR,
 ].filter(Boolean) as string[];
 
 // ---------------------------------------------------------------------------
-// Bearer token management — chain: project .env → MCP config → session
+// Bearer token management — chain: project .env.mcp → MCP config → session
 // ---------------------------------------------------------------------------
 
 /** Session-scoped token set via rest_set_token. Persists until server restart. */
@@ -41,15 +41,15 @@ let sessionBearerToken: string | null = null;
 
 /**
  * Bearer token resolution chain (evaluated fresh on every request):
- *   1. Project .env file  (REST_BEARER_TOKEN) — supports live rotation
+ *   1. Project .env.mcp file  (REST_BEARER_TOKEN) — supports live rotation
  *   2. MCP server config env var (REST_BEARER_TOKEN set at launch)
  *   3. Session token (set interactively via rest_set_token tool)
  */
 function getBearerToken(): string {
-  // 1. Project .env (read fresh every call)
+  // 1. Project .env.mcp (read fresh every call)
   for (const dir of ENV_SEARCH_DIRS) {
     try {
-      const envPath = resolve(dir, '.env');
+      const envPath = resolve(dir, '.env.mcp');
       const content = readFileSync(envPath, 'utf-8');
       const match = content.match(/^REST_BEARER_TOKEN=(.+)$/m);
       if (match) {
@@ -74,11 +74,11 @@ function getBearerToken(): string {
 function getTokenSource(): string {
   for (const dir of ENV_SEARCH_DIRS) {
     try {
-      const envPath = resolve(dir, '.env');
+      const envPath = resolve(dir, '.env.mcp');
       const content = readFileSync(envPath, 'utf-8');
       const match = content.match(/^REST_BEARER_TOKEN=(.+)$/m);
       if (match && match[1].trim().replace(/^["']|["']$/g, '')) {
-        return `project .env (${envPath})`;
+        return `project .env.mcp (${envPath})`;
       }
     } catch { /* continue */ }
   }
@@ -326,7 +326,7 @@ function buildAuthHint(status: number): Record<string, unknown> | null {
       status: 'NO_TOKEN',
       message: 'Authentication failed. No bearer token is configured.',
       resolution: [
-        '1. Add REST_BEARER_TOKEN=<your-token> to the project .env file',
+        '1. Add REST_BEARER_TOKEN=<your-token> to the project .env.mcp file',
         '2. Or configure REST_BEARER_TOKEN in the MCP server env vars',
         '3. Or call rest_set_token with the token to set it for this session',
       ],
@@ -481,7 +481,7 @@ const customHeadersList = Object.entries(getCustomHeaders())
   .map(([k, v]) => `${k}: ${v}`)
   .join(', ');
 
-const tokenChainInfo = 'Token resolution: 1) project .env REST_BEARER_TOKEN, 2) MCP config env var, 3) session token via rest_set_token. If none found on 401/403, ask the user for a token.';
+const tokenChainInfo = 'Token resolution: 1) project .env.mcp REST_BEARER_TOKEN, 2) MCP config env var, 3) session token via rest_set_token. If none found on 401/403, ask the user for a token.';
 
 const contextResolutionGuidance = `
 AUTONOMOUS CONTEXT RESOLUTION — When the endpoint comes from code analysis (feature-port, migration, Vuex store dispatch, API service file):
