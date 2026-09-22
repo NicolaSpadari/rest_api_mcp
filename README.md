@@ -64,11 +64,27 @@ All configuration is done via environment variables:
 
 | Variable | Required | Description |
 |---|---|---|
-| `REST_BASE_URL` | Yes | Base URL for all API requests (e.g. `https://api.example.com/v1`) |
+| `REST_BASE_URL` | No* | Fallback base URL for all API requests (e.g. `https://api.example.com/v1`). *Required unless the project `.env.mcp` provides it |
 | `REST_BEARER_TOKEN` | No | Bearer token for authentication |
 | `REST_RESPONSE_SIZE_LIMIT` | No | Max response size in bytes before smart truncation (default: `50000`) |
-| `REST_ENV_DIR` | No | Additional directory to search for `.env.mcp` files containing `REST_BEARER_TOKEN` |
+| `REST_ENV_DIR` | No | Additional directory to search for `.env.mcp` files containing `REST_BASE_URL` / `REST_BEARER_TOKEN` |
 | `HEADER_*` | No | Custom headers injected into every request (e.g. `HEADER_X_API_KEY=abc` sends `X-Api-Key: abc`) |
+
+### Base URL
+
+The base URL is resolved in this order (first match wins), fresh on every request:
+
+1. **Project `.env.mcp` file** — `REST_BASE_URL` in a `.env.mcp` file in the working directory or `REST_ENV_DIR`. Lets each project point at its own API with a single global server registration.
+2. **MCP config env var** — `REST_BASE_URL` set in the MCP server configuration.
+
+Example project `.env.mcp`:
+
+```
+REST_BASE_URL=https://api.example.com/api
+REST_BEARER_TOKEN=your-token-here
+```
+
+If neither is set, request tools fail with a clear error instead of hitting a placeholder host.
 
 ### Authentication
 

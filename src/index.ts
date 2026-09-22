@@ -14,16 +14,12 @@ import { resolve } from 'path';
 // Configuration from environment
 // ---------------------------------------------------------------------------
 
-const REST_BASE_URL = process.env.REST_BASE_URL;
-if (!REST_BASE_URL) {
-  throw new Error('REST_BASE_URL environment variable is required');
-}
-
 const RESPONSE_SIZE_LIMIT = Math.max(
   1,
   parseInt(process.env.REST_RESPONSE_SIZE_LIMIT || '50000', 10) || 50000,
 );
 
+const CONFIG_BASE_URL = process.env.REST_BASE_URL || '';
 const CONFIG_BEARER_TOKEN = process.env.REST_BEARER_TOKEN || '';
 
 // Directories to search for .env.mcp files (cwd first, then explicit env var)
@@ -31,6 +27,71 @@ const ENV_SEARCH_DIRS = [
   process.cwd(),
   process.env.REST_ENV_DIR,
 ].filter(Boolean) as string[];
+
+// ---------------------------------------------------------------------------
+// Project .env.mcp lookup — read fresh on every call so values can change
+// without restarting the server
+// ---------------------------------------------------------------------------
+
+interface EnvMcpValue {
+  value: string;
+  path: string;
+}
+
+function readEnvMcpVar(name: string): EnvMcpValue | null {
+  const pattern = new RegExp(`^${name}=(.+)$`, 'm');
+  for (const dir of ENV_SEARCH_DIRS) {
+    try {
+      const envPath = resolve(dir, '.env.mcp');
+      const content = readFileSync(envPath, 'utf-8');
+      const match = content.match(pattern);
+      if (match) {
+        const value = match[1].trim().replace(/^["']|["']$/g, '');
+        if (value) return { value, path: envPath };
+      }
+    } catch {
+      // file not found or unreadable — try next source
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Base URL — chain: project .env.mcp → MCP config
+// ---------------------------------------------------------------------------
+
+const normalizeBaseUrl = (url: string) => url.replace(/\/+$/, '');
+
+/**
+ * Base URL resolution chain (evaluated fresh on every request):
+ *   1. Project .env.mcp file  (REST_BASE_URL) — per-project API target
+ *   2. MCP server config env var (REST_BASE_URL set at launch)
+ */
+function getBaseUrl(): string {
+  const fromEnvMcp = readEnvMcpVar('REST_BASE_URL');
+  if (fromEnvMcp) return normalizeBaseUrl(fromEnvMcp.value);
+  if (CONFIG_BASE_URL) return normalizeBaseUrl(CONFIG_BASE_URL);
+  return '';
+}
+
+function getBaseUrlSource(): string {
+  const fromEnvMcp = readEnvMcpVar('REST_BASE_URL');
+  if (fromEnvMcp) return `project .env.mcp (${fromEnvMcp.path})`;
+  if (CONFIG_BASE_URL) return 'MCP server config env';
+  return 'none';
+}
+
+/** Base URL for outgoing requests; throws a clear error when nothing is configured. */
+function requireBaseUrl(): string {
+  const base = getBaseUrl();
+  if (!base) {
+    throw new McpError(
+      ErrorCode.InvalidRequest,
+      'No base URL configured. Add REST_BASE_URL=<https://api.example.com> to the project .env.mcp file (or set REST_BASE_URL in the MCP server config env).',
+    );
+  }
+  return base;
+}
 
 // ---------------------------------------------------------------------------
 // Bearer token management — chain: project .env.mcp → MCP config → session
@@ -46,42 +107,17 @@ let sessionBearerToken: string | null = null;
  *   3. Session token (set interactively via rest_set_token tool)
  */
 function getBearerToken(): string {
-  // 1. Project .env.mcp (read fresh every call)
-  for (const dir of ENV_SEARCH_DIRS) {
-    try {
-      const envPath = resolve(dir, '.env.mcp');
-      const content = readFileSync(envPath, 'utf-8');
-      const match = content.match(/^REST_BEARER_TOKEN=(.+)$/m);
-      if (match) {
-        const token = match[1].trim().replace(/^["']|["']$/g, '');
-        if (token) return token;
-      }
-    } catch {
-      // file not found or unreadable — try next source
-    }
-  }
-
-  // 2. MCP config env var (set when server was launched)
+  const fromEnvMcp = readEnvMcpVar('REST_BEARER_TOKEN');
+  if (fromEnvMcp) return fromEnvMcp.value;
   if (CONFIG_BEARER_TOKEN) return CONFIG_BEARER_TOKEN;
-
-  // 3. Session token (set via rest_set_token tool)
   if (sessionBearerToken) return sessionBearerToken;
-
   return '';
 }
 
 /** Identify where the current token comes from (for diagnostics / hints). */
 function getTokenSource(): string {
-  for (const dir of ENV_SEARCH_DIRS) {
-    try {
-      const envPath = resolve(dir, '.env.mcp');
-      const content = readFileSync(envPath, 'utf-8');
-      const match = content.match(/^REST_BEARER_TOKEN=(.+)$/m);
-      if (match && match[1].trim().replace(/^["']|["']$/g, '')) {
-        return `project .env.mcp (${envPath})`;
-      }
-    } catch { /* continue */ }
-  }
+  const fromEnvMcp = readEnvMcpVar('REST_BEARER_TOKEN');
+  if (fromEnvMcp) return `project .env.mcp (${fromEnvMcp.path})`;
   if (CONFIG_BEARER_TOKEN) return 'MCP server config env';
   if (sessionBearerToken) return 'session (rest_set_token)';
   return 'none';
@@ -97,9 +133,6 @@ function getCustomHeaders(): Record<string, string> {
   }
   return headers;
 }
-
-const normalizeBaseUrl = (url: string) => url.replace(/\/+$/, '');
-const BASE = normalizeBaseUrl(REST_BASE_URL);
 
 // ---------------------------------------------------------------------------
 // Response analysis helpers
@@ -363,7 +396,7 @@ function validateArgs(args: unknown): asserts args is RequestArgs {
   if (/^https?:\/\//i.test(a.endpoint)) {
     throw new McpError(
       ErrorCode.InvalidParams,
-      `Do not include full URLs in endpoint. Use just the path (e.g. "/api/users"). It will be resolved to: ${BASE}${a.endpoint}`,
+      `Do not include full URLs in endpoint. Use just the path (e.g. "/api/users"). It will be resolved to: ${getBaseUrl()}${a.endpoint}`,
     );
   }
 }
@@ -378,7 +411,7 @@ async function executeRequest(args: RequestArgs) {
     qs = `?${params.toString()}`;
   }
 
-  const url = `${BASE}${normalizedEndpoint}${qs}`;
+  const url = `${requireBaseUrl()}${normalizedEndpoint}${qs}`;
 
   // Merge headers: custom globals < per-request < auth
   const mergedHeaders: Record<string, string> = {
@@ -482,6 +515,7 @@ const customHeadersList = Object.entries(getCustomHeaders())
   .join(', ');
 
 const tokenChainInfo = 'Token resolution: 1) project .env.mcp REST_BEARER_TOKEN, 2) MCP config env var, 3) session token via rest_set_token. If none found on 401/403, ask the user for a token.';
+const baseUrlInfo = 'Base URL resolution: 1) project .env.mcp REST_BASE_URL, 2) MCP config env var.';
 
 const contextResolutionGuidance = `
 AUTONOMOUS CONTEXT RESOLUTION — When the endpoint comes from code analysis (feature-port, migration, Vuex store dispatch, API service file):
@@ -518,7 +552,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // -----------------------------------------------------------------------
     {
       name: 'rest_request',
-      description: `Execute an HTTP request and return the full response (smart-truncated if large). Base URL: ${BASE} | ${tokenChainInfo}${customHeadersList ? ` | Custom headers: ${customHeadersList}` : ''}. Responses over ${RESPONSE_SIZE_LIMIT} bytes are smart-truncated. Use rest_describe for structure only, or rest_types for TypeScript interfaces. ${contextResolutionGuidance}`,
+      description: `Execute an HTTP request and return the full response (smart-truncated if large). Base URL: ${getBaseUrl() || 'not configured'} | ${baseUrlInfo} | ${tokenChainInfo}${customHeadersList ? ` | Custom headers: ${customHeadersList}` : ''}. Responses over ${RESPONSE_SIZE_LIMIT} bytes are smart-truncated. Use rest_describe for structure only, or rest_types for TypeScript interfaces. ${contextResolutionGuidance}`,
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -529,7 +563,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           endpoint: {
             type: 'string',
-            description: `Path only (e.g. "/users"). Resolved to: ${BASE}/...`,
+            description: `Path only (e.g. "/users"). Resolved to: ${getBaseUrl() || 'not configured'}/...`,
           },
           body: {
             description: 'Request body (for POST/PUT/PATCH). Object auto-serialized as JSON.',
@@ -553,7 +587,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // -----------------------------------------------------------------------
     {
       name: 'rest_describe',
-      description: `Execute an HTTP request and return the response structure (keys, types, array lengths) AND generated TypeScript interfaces — without the full body. Ideal for large responses. ${typeExtractionGuidance} Base URL: ${BASE}. ${contextResolutionGuidance}`,
+      description: `Execute an HTTP request and return the response structure (keys, types, array lengths) AND generated TypeScript interfaces — without the full body. Ideal for large responses. ${typeExtractionGuidance} Base URL: ${getBaseUrl() || 'not configured'}. ${contextResolutionGuidance}`,
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -564,7 +598,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           endpoint: {
             type: 'string',
-            description: `Path only (e.g. "/users"). Resolved to: ${BASE}/...`,
+            description: `Path only (e.g. "/users"). Resolved to: ${getBaseUrl() || 'not configured'}/...`,
           },
           body: {
             description: 'Request body (for POST/PUT/PATCH)',
@@ -592,7 +626,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // -----------------------------------------------------------------------
     {
       name: 'rest_types',
-      description: `Execute an HTTP request and generate TypeScript interfaces from the response structure. This is the PRIMARY tool for feature-port and migration workflows — returns clean, ready-to-use TypeScript interfaces. ${typeExtractionGuidance} Base URL: ${BASE}. ${contextResolutionGuidance}`,
+      description: `Execute an HTTP request and generate TypeScript interfaces from the response structure. This is the PRIMARY tool for feature-port and migration workflows — returns clean, ready-to-use TypeScript interfaces. ${typeExtractionGuidance} Base URL: ${getBaseUrl() || 'not configured'}. ${contextResolutionGuidance}`,
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -603,7 +637,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           endpoint: {
             type: 'string',
-            description: `Path only (e.g. "/users"). Resolved to: ${BASE}/...`,
+            description: `Path only (e.g. "/users"). Resolved to: ${getBaseUrl() || 'not configured'}/...`,
           },
           body: {
             description: 'Request body (for POST/PUT/PATCH)',
@@ -631,7 +665,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // -----------------------------------------------------------------------
     {
       name: 'rest_extract',
-      description: `Execute an HTTP request, then extract specific fields using dot-notation paths. Returns only the extracted data. Example: fields ["data.items[].name", "meta.total"]. Base URL: ${BASE}. ${contextResolutionGuidance}`,
+      description: `Execute an HTTP request, then extract specific fields using dot-notation paths. Returns only the extracted data. Example: fields ["data.items[].name", "meta.total"]. Base URL: ${getBaseUrl() || 'not configured'}. ${contextResolutionGuidance}`,
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -869,7 +903,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`rest-api-mcp running | base: ${BASE} | token: ${getTokenSource()}`);
+  console.error(`rest-api-mcp running | base: ${getBaseUrl() || 'none'} (${getBaseUrlSource()}) | token: ${getTokenSource()}`);
 }
 
 main().catch((err) => {
